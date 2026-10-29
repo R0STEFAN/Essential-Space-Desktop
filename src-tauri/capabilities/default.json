@@ -9,6 +9,8 @@
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "core:window:allow-close",
+    "core:window:allow-unminimize",
+    "core:window:allow-minimize",
     "core:event:default",
     {
       "identifier": "http:default",
@@ -20,11 +22,19 @@
       ]
     },
     "global-shortcut:default",
+    "global-shortcut:allow-is-registered",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-register-all",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-unregister-all",
     "autostart:default",
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "clipboard-manager:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-image",
     "shell:default"
   ]
 }

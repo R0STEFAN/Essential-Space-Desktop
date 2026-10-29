@@ -130,13 +130,27 @@ export default function App() {
     }
   }, [currentUser, loadData]);
 
+  // Global Quick Capture summon handler
+  const handleOpenQuickCaptureFromGlobal = useCallback(async () => {
+    if (isTauri()) {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        await win.show();
+        await win.unminimize();
+        await win.setFocus();
+      } catch (e) {
+        console.warn('Failed to summon window on hotkey:', e);
+      }
+    }
+    setIsQuickCaptureOpen(true);
+  }, []);
+
   // Global Quick Capture shortcut registration
   useEffect(() => {
     const bindShortcut = async () => {
       const shortcut = getStoredShortcut();
-      await setupGlobalShortcut(shortcut, () => {
-        setIsQuickCaptureOpen(true);
-      });
+      await setupGlobalShortcut(shortcut, handleOpenQuickCaptureFromGlobal);
     };
 
     bindShortcut();
@@ -144,7 +158,7 @@ export default function App() {
     return () => {
       cleanupGlobalShortcuts();
     };
-  }, []);
+  }, [handleOpenQuickCaptureFromGlobal]);
 
   // Listen to Tray event `open-quick-capture` from Tauri backend
   useEffect(() => {
@@ -152,7 +166,7 @@ export default function App() {
 
     let unlistenFn: (() => void) | undefined;
     listen('open-quick-capture', () => {
-      setIsQuickCaptureOpen(true);
+      handleOpenQuickCaptureFromGlobal();
     }).then(u => {
       unlistenFn = u;
     });
@@ -160,7 +174,7 @@ export default function App() {
     return () => {
       if (unlistenFn) unlistenFn();
     };
-  }, []);
+  }, [handleOpenQuickCaptureFromGlobal]);
 
   // Sync handler
   const handleSync = async () => {
@@ -641,7 +655,10 @@ export default function App() {
           userEmail={currentUser.email}
           userId={currentUser.uuid}
           onLogout={handleLogout}
-          onShortcutUpdated={() => {}}
+          onShortcutUpdated={() => {
+            const sc = getStoredShortcut();
+            setupGlobalShortcut(sc, handleOpenQuickCaptureFromGlobal);
+          }}
         />
       )}
 

@@ -9,6 +9,18 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    {
+        // Fix for WebKitGTK on Linux Wayland (Niri, Hyprland, Sway, GNOME):
+        // Resolves unresponsive clicks, frozen input, and blank/gray window on resize.
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -37,12 +49,14 @@ fn main() {
                     "open" => {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
+                            let _ = window.unminimize();
                             let _ = window.set_focus();
                         }
                     }
                     "capture" => {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
+                            let _ = window.unminimize();
                             let _ = window.set_focus();
                             let _ = window.emit("open-quick-capture", ());
                         }
@@ -62,6 +76,7 @@ fn main() {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
+                            let _ = window.unminimize();
                             let _ = window.set_focus();
                         }
                     }

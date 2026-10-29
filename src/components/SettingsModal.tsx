@@ -131,10 +131,11 @@ export default function SettingsModal({
       setErrorMessage(null);
 
       // Save and register shortcut
-      setupGlobalShortcut(finalCombo, onShortcutUpdated).then(res => {
+      setupGlobalShortcut(finalCombo).then(res => {
         if (res.success) {
           setCurrentShortcut(finalCombo);
           setStatusMessage('Shortcut updated successfully!');
+          onShortcutUpdated();
           setTimeout(() => setStatusMessage(null), 2500);
         } else {
           setErrorMessage(res.error || 'Failed to bind this shortcut.');
@@ -174,10 +175,11 @@ export default function SettingsModal({
   };
 
   const handleResetShortcut = async () => {
-    const res = await setupGlobalShortcut(DEFAULT_SHORTCUT, onShortcutUpdated);
+    const res = await setupGlobalShortcut(DEFAULT_SHORTCUT);
     if (res.success) {
       setCurrentShortcut(DEFAULT_SHORTCUT);
       setStatusMessage('Reset shortcut to default: Ctrl + Alt + Space');
+      onShortcutUpdated();
       setTimeout(() => setStatusMessage(null), 2500);
     } else {
       setErrorMessage(res.error || 'Failed to reset shortcut.');

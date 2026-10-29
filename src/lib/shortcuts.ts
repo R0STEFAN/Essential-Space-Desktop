@@ -45,19 +45,26 @@ export function storeShortcut(shortcut: string): void {
 let activeHandler: (() => void) | null = null;
 let currentRegisteredShortcut: string | null = null;
 
+export function setActiveShortcutHandler(handler: () => void): void {
+  activeHandler = handler;
+}
+
 /**
  * Registers global shortcut for Quick Capture
  */
 export async function setupGlobalShortcut(
   shortcut: string,
-  onTrigger: () => void
+  onTrigger?: () => void
 ): Promise<{ success: boolean; error?: string }> {
   if (!isTauri()) {
     return { success: true };
   }
 
-  try {
+  if (onTrigger) {
     activeHandler = onTrigger;
+  }
+
+  try {
     const normalized = normalizeShortcut(shortcut);
 
     // Unregister previous if exists
@@ -81,6 +88,7 @@ export async function setupGlobalShortcut(
 
     currentRegisteredShortcut = normalized;
     storeShortcut(shortcut);
+    console.log('[Shortcuts] Registered global shortcut:', normalized);
     return { success: true };
   } catch (err: any) {
     console.error('Failed to register global shortcut:', err);
