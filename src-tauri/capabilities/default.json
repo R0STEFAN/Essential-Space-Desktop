@@ -13,6 +13,9 @@
     "http:default",
     "global-shortcut:default",
     "autostart:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
     "clipboard-manager:default",
     "shell:default"
   ]
