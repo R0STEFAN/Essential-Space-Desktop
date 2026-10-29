@@ -1,8 +1,16 @@
-# Essential Space Desktop
-
-Autonomous native companion application for **Nothing OS Essential Space**, built with **Tauri v2**, **React 19**, **TypeScript**, and **Tailwind CSS**.
-
-![Nothing OS Aesthetic](https://raw.githubusercontent.com/R0STEFAN/Essential-Space-Desktop/main/public/icon.png)
+<div align="center">
+  <img src="public/icon.png" width="96" height="96" alt="Essential Space Logo" />
+  <h1>ESSENTIAL SPACE // DESKTOP</h1>
+  <p><b>Autonomous native companion application for Nothing OS Essential Space</b></p>
+  <p>Built with <b>Tauri v2</b> &bull; <b>React 19</b> &bull; <b>TypeScript</b> &bull; <b>Tailwind CSS</b></p>
+  
+  <p>
+    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-D71921?style=flat-square" alt="Platform" />
+    <img src="https://img.shields.io/badge/Tauri-v2-121214?style=flat-square&logo=tauri" alt="Tauri v2" />
+    <img src="https://img.shields.io/badge/React-19-141416?style=flat-square&logo=react" alt="React 19" />
+    <img src="https://img.shields.io/badge/License-MIT-26262A?style=flat-square" alt="License" />
+  </p>
+</div>
 
 ---
 
@@ -93,7 +101,7 @@ Binaries will be output to:
 
 ## Continuous Integration & Releases
 
-Automated builds and GitHub Releases are powered by `.github/workflows/release.yml`. Whenever a tag is pushed (e.g. `git tag v1.0.0 && git push origin v1.0.0`), GitHub Actions compiles Windows (`.msi`, `.exe`) and Linux (`.AppImage`, `.deb`) packages in the cloud and attaches them to the GitHub release.
+Automated builds and GitHub Releases are powered by `.github/workflows/release.yml`. Whenever a tag is pushed (e.g. `git tag v1.0.0 && git push origin v1.0.0`) or triggered manually via **Run workflow** in GitHub Actions, GitHub Actions compiles Windows (`.msi`, `.exe`) and Linux (`.AppImage`, `.deb`) packages in the cloud and attaches them to the release.
 
 ---
 
