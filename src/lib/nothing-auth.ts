@@ -282,6 +282,10 @@ async function getOrCreateDeviceIdentity(cookies: Record<string, string>): Promi
 
   extractSetCookies(reportRes, cookies);
   if (!reportRes.ok) {
+    cachedIdentity = null;
+    try {
+      localStorage.removeItem(DEVICE_STORAGE_KEY);
+    } catch {}
     if (reportRes.status === 429) {
       throw new Error(
         'Nothing Cloud temporarily rate-limited requests from your IP address (HTTP 429). Please wait for cooldown or sign in with Bearer Token.'
