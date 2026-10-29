@@ -1,0 +1,144 @@
+import { useState, useEffect } from 'react';
+import { RefreshCw, LogOut, Sparkles, Layers, Plus, Settings } from 'lucide-react';
+
+interface NavbarProps {
+  userEmail: string;
+  isSyncing: boolean;
+  activeTab: 'foryou' | 'library';
+  onSelectTab: (tab: 'foryou' | 'library') => void;
+  onSync: () => void;
+  onLogout: () => void;
+  onOpenCreateNote?: () => void;
+  onOpenSettings?: () => void;
+}
+
+export default function Navbar({
+  userEmail,
+  isSyncing,
+  activeTab,
+  onSelectTab,
+  onSync,
+  onLogout,
+  onOpenCreateNote,
+  onOpenSettings,
+}: NavbarProps) {
+  const [time, setTime] = useState<string>('');
+
+  useEffect(() => {
+    const updateTime = () => {
+      const now = new Date();
+      setTime(
+        now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+      );
+    };
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <header className="border-b border-nothing-border bg-black/80 backdrop-blur-md sticky top-0 z-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        {/* Brand */}
+        <div className="flex items-center gap-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/icon.svg" alt="Essential Space Icon" className="w-7 h-7" />
+          <div className="flex flex-col">
+            <span className="font-dot text-sm tracking-wider font-semibold text-white">
+              ESSENTIAL SPACE // DESKTOP
+            </span>
+            <span className="text-[10px] font-mono text-nothing-gray hidden sm:inline">
+              NOTHING OS COMPANION APP
+            </span>
+          </div>
+        </div>
+
+        {/* Tab Switcher: For You / Library in Nothing OS Style */}
+        <nav className="flex items-center gap-1 bg-nothing-card/90 p-1 rounded-full border border-nothing-border shadow-inner">
+          <button
+            onClick={() => onSelectTab('foryou')}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-dot tracking-wider transition-all duration-200 select-none ${
+              activeTab === 'foryou'
+                ? 'bg-white text-black font-semibold shadow-sm'
+                : 'text-nothing-gray hover:text-white hover:bg-nothing-hover/30'
+            }`}
+          >
+            <Sparkles size={13} className={activeTab === 'foryou' ? 'text-nothing-red' : ''} />
+            <span>FOR YOU</span>
+          </button>
+
+          <button
+            onClick={() => onSelectTab('library')}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-dot tracking-wider transition-all duration-200 select-none ${
+              activeTab === 'library'
+                ? 'bg-white text-black font-semibold shadow-sm'
+                : 'text-nothing-gray hover:text-white hover:bg-nothing-hover/30'
+            }`}
+          >
+            <Layers size={13} />
+            <span>LIBRARY</span>
+          </button>
+        </nav>
+
+        {/* Right Section: Clock, Sync, Settings & User */}
+        <div className="flex items-center gap-3 font-mono text-xs">
+          {/* Digital Clock */}
+          {time && (
+            <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded bg-nothing-card border border-nothing-border text-nothing-light font-mono text-xs">
+              <span className="w-1.5 h-1.5 rounded-full bg-nothing-red animate-pulse" />
+              <span>{time}</span>
+            </div>
+          )}
+
+          {/* Create Capture Button */}
+          {onOpenCreateNote && (
+            <button
+              onClick={onOpenCreateNote}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nothing-red hover:bg-nothing-red/80 text-white font-dot text-xs tracking-wider transition-all shadow-md shadow-nothing-red/20 active:scale-95"
+            >
+              <Plus size={13} strokeWidth={3} />
+              <span className="hidden sm:inline">CAPTURE</span>
+            </button>
+          )}
+
+          {/* Sync Button */}
+          <button
+            onClick={onSync}
+            disabled={isSyncing}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nothing-card hover:bg-nothing-hover border border-nothing-border text-nothing-light transition-all active:scale-95 disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={isSyncing ? 'animate-spin text-nothing-red' : ''} />
+            <span className="font-dot text-[11px] hidden sm:inline">
+              {isSyncing ? 'SYNCING...' : 'SYNC'}
+            </span>
+          </button>
+
+          {/* Settings Button */}
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              title="Settings & Shortcuts"
+              className="p-1.5 rounded-lg text-nothing-gray hover:text-white hover:bg-nothing-hover transition-colors"
+            >
+              <Settings size={15} />
+            </button>
+          )}
+
+          {/* User Profile & Logout */}
+          <div className="flex items-center gap-2 pl-2 border-l border-nothing-border">
+            <span className="text-nothing-gray text-xs truncate max-w-[120px] sm:max-w-[180px] hidden sm:inline">
+              {userEmail}
+            </span>
+            <button
+              onClick={onLogout}
+              title="Logout"
+              className="p-1.5 rounded-lg text-nothing-gray hover:text-nothing-red hover:bg-nothing-hover transition-colors"
+            >
+              <LogOut size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+}
