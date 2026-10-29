@@ -90,7 +90,11 @@ fn main() {
                         }
                     }
                 })
-                .build(app)?;
+                .build(app);
+
+            if let Err(err) = _tray {
+                eprintln!("[Warning] System tray icon unavailable: {err}");
+            }
 
             Ok(())
         })

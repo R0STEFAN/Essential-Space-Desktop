@@ -11,14 +11,18 @@ finish-args:
   - --device=dri
   - --share=network
   - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=com.canonical.indicator.application
+  - --talk-name=org.ayatana.indicator.application
   - --filesystem=xdg-download
 
 modules:
   - name: essential-space
     buildsystem: simple
     build-commands:
-      - mkdir -p /app/bin /app/share/applications /app/share/icons/hicolor/128x128/apps /app/share/icons/hicolor/32x32/apps /app/share/icons/hicolor/256x256/apps
+      - mkdir -p /app/bin /app/lib /app/share/applications /app/share/icons/hicolor/128x128/apps /app/share/icons/hicolor/32x32/apps /app/share/icons/hicolor/256x256/apps
       - install -Dm755 usr/bin/essential-space-desktop /app/bin/essential-space-desktop
+      - cp -d usr/lib/*.so* /app/lib/ 2>/dev/null || true
       - cp -r usr/share/icons/* /app/share/icons/ 2>/dev/null || true
       - cp usr/share/applications/*.desktop /app/share/applications/com.nothing.essentialspace.desktop.desktop
       - sed -i 's/^Exec=.*/Exec=essential-space-desktop/' /app/share/applications/com.nothing.essentialspace.desktop.desktop

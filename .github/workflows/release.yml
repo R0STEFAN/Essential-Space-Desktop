@@ -90,6 +90,11 @@ jobs:
           ar x "../$DEB_FILE"
           mkdir -p ../package-bundle
           tar -xf data.tar.* -C ../package-bundle
+          mkdir -p ../package-bundle/usr/lib
+          cp -d /usr/lib/x86_64-linux-gnu/libayatana-appindicator3.so* ../package-bundle/usr/lib/ 2>/dev/null || true
+          cp -d /usr/lib/x86_64-linux-gnu/libayatana-ido3*.so* ../package-bundle/usr/lib/ 2>/dev/null || true
+          cp -d /usr/lib/x86_64-linux-gnu/libdbusmenu-gtk3.so* ../package-bundle/usr/lib/ 2>/dev/null || true
+          cp -d /usr/lib/x86_64-linux-gnu/libdbusmenu-glib.so* ../package-bundle/usr/lib/ 2>/dev/null || true
           cd ..
           rm -rf temp-deb
 
