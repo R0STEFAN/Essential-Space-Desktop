@@ -11,8 +11,17 @@ use tauri_plugin_autostart::MacosLauncher;
 fn main() {
     #[cfg(target_os = "linux")]
     {
-        // Fix for WebKitGTK on Linux Wayland (Niri, Hyprland, Sway, GNOME):
-        // Resolves unresponsive clicks, frozen input, and blank/gray window on resize.
+        // Fix for Linux Wayland (Niri, Hyprland, Sway, GNOME Wayland):
+        // AppImages bundled with linuxdeploy-plugin-gtk inject `export GDK_BACKEND=x11`.
+        // On pure Wayland compositors (like Niri), running as an XWayland client causes:
+        // 1) Window resizing failure (the webview stays fixed at initial 1200px width with black dead space).
+        // 2) Complete drop/unresponsiveness of mouse clicks due to desynchronized coordinate spaces.
+        // If WAYLAND_DISPLAY is set (user is on Wayland), ensure GDK uses native Wayland with X11 fallback:
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            std::env::set_var("GDK_BACKEND", "wayland,x11");
+        }
+
+        // Fix for WebKitGTK DMA-BUF rendering issue on Linux causing blank/gray screens on resize:
         if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
             std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         }

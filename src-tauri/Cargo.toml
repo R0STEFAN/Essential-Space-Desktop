@@ -1,6 +1,6 @@
 [package]
 name = "essential-space-desktop"
-version = "1.0.6"
+version = "1.0.7"
 description = "Essential Space Desktop Native Companion"
 authors = ["R0STEFAN"]
 edition = "2021"
