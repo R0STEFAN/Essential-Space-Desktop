@@ -7,14 +7,24 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
  */
 export async function nothingFetch(
   targetUrl: string,
-  options: RequestInit = {}
+  options: RequestInit & { maxRedirections?: number } = {}
 ): Promise<Response> {
-  // Check if running inside Tauri runtime
-  if (typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)) {
+  const isTauri =
+    typeof window !== 'undefined' &&
+    ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
+
+  if (isTauri) {
     try {
-      return await tauriFetch(targetUrl, options as any);
+      const fetchOpts = { ...options };
+      // When redirect: 'manual' is requested, pass maxRedirections: 0 to ensure Tauri's reqwest client
+      // does not follow redirects automatically, allowing the caller to inspect 302 Location headers
+      if (fetchOpts.redirect === 'manual' && fetchOpts.maxRedirections === undefined) {
+        fetchOpts.maxRedirections = 0;
+      }
+      return await tauriFetch(targetUrl, fetchOpts as any);
     } catch (tauriErr) {
-      console.warn('Tauri native fetch encountered an issue, falling back to standard fetch:', tauriErr);
+      console.error(`Tauri native fetch error for [${targetUrl}]:`, tauriErr);
+      throw tauriErr;
     }
   }
 

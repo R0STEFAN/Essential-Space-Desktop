@@ -1,6 +1,6 @@
 {
   "name": "essential-space-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Essential Space Desktop Native Companion with Tauri v2",
   "private": true,
   "type": "module",

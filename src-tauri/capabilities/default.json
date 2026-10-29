@@ -10,7 +10,15 @@
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:event:default",
-    "http:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://*" },
+        { "url": "http://*" },
+        { "url": "https://*:*" },
+        { "url": "http://*:*" }
+      ]
+    },
     "global-shortcut:default",
     "autostart:default",
     "autostart:allow-enable",

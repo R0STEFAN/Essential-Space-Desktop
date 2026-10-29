@@ -83,14 +83,17 @@ function formatCookieHeader(cookieJar: Record<string, string>): string {
 }
 
 function extractSetCookies(res: Response, cookieJar: Record<string, string>) {
-  const setCookies =
-    typeof (res.headers as any).getSetCookie === 'function'
-      ? (res.headers as any).getSetCookie()
-      : res.headers.get('set-cookie')
-      ? [res.headers.get('set-cookie')!]
-      : [];
+  let setCookies: string[] = [];
+  if (typeof (res.headers as any).getSetCookie === 'function') {
+    setCookies = (res.headers as any).getSetCookie() || [];
+  }
+  if (!setCookies.length) {
+    const raw = res.headers.get('set-cookie');
+    if (raw) setCookies = [raw];
+  }
 
   for (const raw of setCookies) {
+    if (!raw) continue;
     const pair = String(raw).split(';')[0];
     const eqIdx = pair.indexOf('=');
     if (eqIdx > 0) {
@@ -173,9 +176,53 @@ async function buildDeviceHeaders(
   };
 }
 
+const DEVICE_STORAGE_KEY = 'nothing_device_identity';
+
+interface PersistedDeviceIdentity {
+  deviceId: string;
+  privateKeyJwk: JsonWebKey;
+  publicSpkiBase64: string;
+  deviceInfoB64: string;
+  nextRotationAt: number;
+}
+
 async function getOrCreateDeviceIdentity(cookies: Record<string, string>): Promise<CachedDeviceIdentity> {
   if (cachedIdentity && Date.now() < cachedIdentity.nextRotationAt) {
     return cachedIdentity;
+  }
+
+  // Check persistent storage
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const rawPersisted = localStorage.getItem(DEVICE_STORAGE_KEY);
+      if (rawPersisted) {
+        const parsed: PersistedDeviceIdentity = JSON.parse(rawPersisted);
+        if (
+          parsed.deviceId &&
+          parsed.privateKeyJwk &&
+          parsed.deviceInfoB64 &&
+          Date.now() < parsed.nextRotationAt
+        ) {
+          const privateKey = await crypto.subtle.importKey(
+            'jwk',
+            parsed.privateKeyJwk,
+            { name: 'ECDSA', namedCurve: 'P-256' },
+            true,
+            ['sign']
+          );
+          cachedIdentity = {
+            deviceId: parsed.deviceId,
+            privateKey,
+            publicSpkiBase64: parsed.publicSpkiBase64,
+            deviceInfoB64: parsed.deviceInfoB64,
+            nextRotationAt: parsed.nextRotationAt,
+          };
+          return cachedIdentity;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to restore persisted device identity:', e);
+    }
   }
 
   const keyPair = await crypto.subtle.generateKey(
@@ -235,6 +282,11 @@ async function getOrCreateDeviceIdentity(cookies: Record<string, string>): Promi
 
   extractSetCookies(reportRes, cookies);
   if (!reportRes.ok) {
+    if (reportRes.status === 429) {
+      throw new Error(
+        'Nothing Cloud temporarily rate-limited requests from your IP address (HTTP 429). Please wait for cooldown or sign in with Bearer Token.'
+      );
+    }
     const errText = await reportRes.text();
     throw new Error(`Nothing device registration failed (${reportRes.status}): ${errText}`);
   }
@@ -249,6 +301,23 @@ async function getOrCreateDeviceIdentity(cookies: Record<string, string>): Promi
       ? new Date(reportData.next_key_rotation_at).getTime()
       : Date.now() + 25 * 24 * 60 * 60 * 1000,
   };
+
+  // Persist identity to avoid repetitive /device/report calls
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+      const persisted: PersistedDeviceIdentity = {
+        deviceId: reportData.device_id,
+        privateKeyJwk,
+        publicSpkiBase64,
+        deviceInfoB64,
+        nextRotationAt: cachedIdentity.nextRotationAt,
+      };
+      localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify(persisted));
+    } catch (e) {
+      console.warn('Failed to persist device identity:', e);
+    }
+  }
 
   return cachedIdentity;
 }
@@ -596,7 +665,21 @@ export async function loginWithToken(
   token: string
 ): Promise<{ success: boolean; user?: NothingUser; error?: string }> {
   try {
-    const cleanToken = token.trim().replace(/^Bearer\s+/i, '').replace(/^["']|["']$/g, '');
+    let cleanToken = token.trim().replace(/^Bearer\s+/i, '').replace(/^["']|["']$/g, '');
+    let refreshToken: string | undefined = undefined;
+
+    if (cleanToken.startsWith('{') && cleanToken.endsWith('}')) {
+      try {
+        const parsedJson = JSON.parse(cleanToken);
+        if (parsedJson.token || parsedJson.accessToken) {
+          cleanToken = (parsedJson.token || parsedJson.accessToken).trim();
+        }
+        if (parsedJson.refreshToken) {
+          refreshToken = String(parsedJson.refreshToken).trim();
+        }
+      } catch {}
+    }
+
     const parsed = parseNothingJwt(cleanToken);
 
     if (!parsed) {
@@ -608,6 +691,7 @@ export async function loginWithToken(
       email: parsed.email,
       userName: parsed.userName || 'Nothing User',
       token: cleanToken,
+      refreshToken,
     };
 
     await saveDbAuth(user);
