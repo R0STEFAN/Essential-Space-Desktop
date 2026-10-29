@@ -466,10 +466,12 @@ async function resolveAuthorizationCode(session: AuthflowSession, actionData: an
 
   let currentUrl: string = actionData?.redirect_url || actionData?.redirectUrl || '';
   if (currentUrl) {
-    const parsedInitial = new URL(currentUrl, SSO_ORIGIN);
-    const directCode = parsedInitial.searchParams.get('code');
-    if (directCode) return directCode;
-    currentUrl = parsedInitial.toString();
+    try {
+      const parsedInitial = new URL(currentUrl, SSO_ORIGIN);
+      const directCode = parsedInitial.searchParams.get('code');
+      if (directCode) return directCode;
+      currentUrl = parsedInitial.toString();
+    } catch {}
   } else {
     const authorizeParams = new URLSearchParams({
       response_type: 'code',
@@ -479,6 +481,9 @@ async function resolveAuthorizationCode(session: AuthflowSession, actionData: an
       state: session.oauthState,
       code_challenge: session.codeChallenge,
       code_challenge_method: 'S256',
+      x_page: 'login',
+      lang: 'en',
+      theme: 'dark',
     });
     currentUrl = `${API_V2_BASE}/oauth2/authorize?${authorizeParams.toString()}`;
   }
@@ -489,6 +494,7 @@ async function resolveAuthorizationCode(session: AuthflowSession, actionData: an
       headers: {
         Cookie: formatCookieHeader(session.cookies),
         'User-Agent': USER_AGENT,
+        Origin: SSO_ORIGIN,
       },
       redirect: 'manual',
     });
@@ -502,6 +508,33 @@ async function resolveAuthorizationCode(session: AuthflowSession, actionData: an
     if (code) return code;
 
     currentUrl = nextUrl.toString();
+  }
+
+  // Final fallback: re-trigger authorize endpoint with authenticated cookies
+  const authorizeParams = new URLSearchParams({
+    response_type: 'code',
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    scope: 'openid profile email offline_access',
+    state: session.oauthState,
+    code_challenge: session.codeChallenge,
+    code_challenge_method: 'S256',
+  });
+  const finalRes = await nothingFetch(`${API_V2_BASE}/oauth2/authorize?${authorizeParams.toString()}`, {
+    method: 'GET',
+    headers: {
+      Cookie: formatCookieHeader(session.cookies),
+      'User-Agent': USER_AGENT,
+      Origin: SSO_ORIGIN,
+    },
+    redirect: 'manual',
+  });
+  extractSetCookies(finalRes, session.cookies);
+  const finalLoc = finalRes.headers.get('location');
+  if (finalLoc) {
+    const finalUrl = new URL(finalLoc, SSO_ORIGIN);
+    const code = finalUrl.searchParams.get('code');
+    if (code) return code;
   }
 
   throw new Error('Could not obtain OAuth2 authorization code from Nothing Account');
@@ -519,6 +552,7 @@ async function exchangeCodeForUser(session: AuthflowSession, code: string): Prom
   const tokenPath = '/api/v2/oauth2/token';
   const headers = await buildDeviceHeaders(session, tokenPath, bodyStr, {
     'Content-Type': 'application/x-www-form-urlencoded',
+    Origin: SSO_ORIGIN,
     ...(Object.keys(session.cookies).length ? { Cookie: formatCookieHeader(session.cookies) } : {}),
   });
 
@@ -588,50 +622,99 @@ export async function loginWithCredentials(
   pass: string
 ): Promise<{ success: boolean; user?: NothingUser; requiresOtp?: boolean; sessionId?: string; maskedEmail?: string; error?: string }> {
   try {
-    const session = await initAuthflowSession(email);
+    const session = await initAuthflowSession(email.trim());
 
     // Step 1: Submit identification (email)
     const idRes = await postAuthflowInput(session, {
       identification: 'email',
-      login_id: email,
+      login_id: email.trim(),
     });
-    let action = idRes.data?.action;
 
-    // Step 2: Handle password submission
-    if (action?.type === 'authenticate' || action?.data?.type === 'authenticate') {
-      const pwdRes = await postAuthflowInput(session, {
-        authentication: 'primary_password',
-        password: pass,
-      });
-
-      if (![200, 201].includes(pwdRes.status) || pwdRes.data?.error) {
-        throw new Error(pwdRes.data?.message || 'Invalid Nothing Account credentials');
-      }
-      action = pwdRes.data?.action;
+    if (idRes.status === 404) {
+      authSessions.delete(session.id);
+      throw new Error('No Nothing Account found with this email address.');
     }
 
-    // Step 3: Check if 2FA OTP is required
-    if (isOtpAction(action)) {
-      let maskedEmail = email;
-      const opts = action?.data?.options || action?.options;
-      if (Array.isArray(opts)) {
-        const emailOpt = opts.find((o: any) => o.type === 'oob_otp' || o.identification === 'email');
-        if (emailOpt?.masked_display_name) maskedEmail = emailOpt.masked_display_name;
-      }
+    if (idRes.status !== 200 || !idRes.data?.action) {
+      authSessions.delete(session.id);
+      throw new Error(idRes.data?.message || `Identification failed (HTTP ${idRes.status})`);
+    }
 
+    let action = idRes.data.action;
+
+    // If already finished
+    if (action.type === 'finished') {
+      const code = await resolveAuthorizationCode(session, action.data);
+      const user = await exchangeCodeForUser(session, code);
+      return { success: true, user };
+    }
+
+    // Step 2: Authenticate with password if provided
+    if (pass && pass.trim()) {
+      const pwdRes = await postAuthflowInput(session, {
+        authentication: 'password',
+        password: pass.trim(),
+      });
+
+      if (pwdRes.status === 200 && pwdRes.data?.action) {
+        const pwdAction = pwdRes.data.action;
+        if (pwdAction.type === 'finished') {
+          const code = await resolveAuthorizationCode(session, pwdAction.data);
+          const user = await exchangeCodeForUser(session, code);
+          return { success: true, user };
+        }
+        if (isOtpAction(pwdAction)) {
+          const actionData = pwdAction.data || {};
+          return {
+            success: false,
+            requiresOtp: true,
+            sessionId: session.id,
+            maskedEmail: actionData.masked_destination || email.trim(),
+          };
+        }
+        action = pwdAction;
+      } else if (pwdRes.status === 401 || pwdRes.status === 400 || pwdRes.data?.error) {
+        authSessions.delete(session.id);
+        throw new Error(pwdRes.data?.message || 'Incorrect password for Nothing Account.');
+      }
+    }
+
+    // Step 3: Check if OTP is required or trigger OTP to email
+    if (isOtpAction(action)) {
+      const actionData = action.data || {};
       return {
         success: false,
         requiresOtp: true,
         sessionId: session.id,
-        maskedEmail,
+        maskedEmail: actionData.masked_destination || email.trim(),
       };
     }
 
-    // Step 4: Complete OAuth flow
-    const code = await resolveAuthorizationCode(session, action?.data || action);
-    const user = await exchangeCodeForUser(session, code);
+    // Fallback: Trigger OTP to email
+    const otpTriggerRes = await postAuthflowInput(session, {
+      authentication: 'verify_oob_otp_data',
+      channel: 'email',
+    });
 
-    return { success: true, user };
+    if (otpTriggerRes.status === 200 && otpTriggerRes.data?.action) {
+      const otpAction = otpTriggerRes.data.action;
+      const actionData = otpAction.data || {};
+      return {
+        success: false,
+        requiresOtp: true,
+        sessionId: session.id,
+        maskedEmail: actionData.masked_destination || email.trim(),
+      };
+    }
+
+    // If action finished
+    if (action.type === 'finished') {
+      const code = await resolveAuthorizationCode(session, action.data);
+      const user = await exchangeCodeForUser(session, code);
+      return { success: true, user };
+    }
+
+    throw new Error('Could not complete Nothing Account authentication flow');
   } catch (err: any) {
     console.error('Login error:', err);
     return { success: false, error: err?.message || 'Login failed' };
@@ -652,21 +735,22 @@ export async function verifyOtp(
     }
 
     const res = await postAuthflowInput(session, {
-      authentication: 'secondary_oob_otp',
       code: otpCode.trim(),
     });
 
-    if (![200, 201].includes(res.status) || res.data?.error) {
-      throw new Error(res.data?.message || 'Invalid verification code');
+    if (res.status === 200 && res.data?.action?.type === 'finished') {
+      const code = await resolveAuthorizationCode(session, res.data.action.data);
+      const user = await exchangeCodeForUser(session, code);
+      return { success: true, user };
     }
 
-    const action = res.data?.action;
-    const code = await resolveAuthorizationCode(session, action?.data || action);
-    const user = await exchangeCodeForUser(session, code);
+    if (res.status === 400 && res.data?.reason === 'code_incorrect') {
+      throw new Error('Incorrect 6-digit verification code. Please check your email.');
+    }
 
-    return { success: true, user };
+    throw new Error(res.data?.message || 'Verification failed');
   } catch (err: any) {
-    console.error('OTP error:', err);
+    console.error('OTP verification error:', err);
     return { success: false, error: err?.message || 'Verification failed' };
   }
 }
