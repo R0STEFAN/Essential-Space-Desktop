@@ -345,6 +345,7 @@ export async function createCloudCard(params: {
   cachedImageUrl?: string;
   imageGcsKey?: string;
   collectionId?: string;
+  collectionIds?: string[];
   tags?: string[];
   bulletPoints?: string[];
   bulletPointsTitle?: string;
@@ -355,6 +356,8 @@ export async function createCloudCard(params: {
     title?: string;
     description?: string;
     domain?: string;
+    siteName?: string;
+    favicon?: string;
     preview?: string;
   };
   audio?: {
@@ -367,6 +370,9 @@ export async function createCloudCard(params: {
   try {
     const cardId = generateUuid();
     const now = Date.now();
+    const targetCollectionIds = (params.collectionIds && params.collectionIds.length > 0)
+      ? params.collectionIds
+      : (params.collectionId ? [params.collectionId] : []);
 
     // Attach cardId to events
     const eventsWithId = (params.events || []).map(ev => ({
@@ -379,12 +385,13 @@ export async function createCloudCard(params: {
       cardId,
       userId: params.userId,
       type: params.type,
-      title: params.title || (params.type === 'LINK' ? params.linkUrl : 'New Note'),
+      title: params.title || (params.type === 'LINK' ? (params.linkMeta?.title || params.linkUrl) : 'New Note'),
       content: params.content || '',
-      summary: params.summary || params.content || undefined,
+      summary: params.summary || (params.type === 'LINK' ? params.linkMeta?.description : params.content) || undefined,
       imageUrl: params.imageUrl || params.linkMeta?.preview,
       cachedImageUrl: params.cachedImageUrl,
-      collectionId: params.collectionId,
+      collectionId: targetCollectionIds[0] || params.collectionId,
+      collectionIds: targetCollectionIds,
       tags: params.tags,
       bulletPoints: params.bulletPoints,
       bulletPointsTitle: params.bulletPointsTitle,
@@ -407,10 +414,12 @@ export async function createCloudCard(params: {
                   return '';
                 }
               })(),
+            siteName: params.linkMeta?.siteName,
+            favicon: params.linkMeta?.favicon,
             preview: params.linkMeta?.preview || params.imageUrl,
           }
         : undefined,
-      audio: params.audio || (params.content ? { transcript: params.content, duration: 45, speakerName: 'Speaker' } : undefined),
+      audio: params.audio || (params.content && params.type === 'AUDIO' ? { transcript: params.content, duration: 45, speakerName: 'Speaker' } : undefined),
     };
 
     // Build room database bundle for Nothing Phone CloudSyncWorker compatibility
@@ -443,6 +452,35 @@ export async function createCloudCard(params: {
         remote_region: 'europe-west3',
       });
     }
+    // Preserves user's saved link in card_resources (matching Nothing Android Room schema: raw_type 'LINK')
+    if (params.linkUrl) {
+      cardResources.push({
+        card_resource_id: generateUuid(),
+        raw_type: 'LINK',
+        data: params.linkUrl,
+        mime_type: 'text/plain',
+        is_primary: true,
+        metadata: JSON.stringify({
+          fav_icon: params.linkMeta?.favicon || '',
+          type: 'website',
+          title: params.linkMeta?.title || params.title || '',
+          description: params.linkMeta?.description || params.summary || '',
+          domain:
+            params.linkMeta?.domain ||
+            (() => {
+              try {
+                return new URL(params.linkUrl).hostname.replace(/^www\./, '');
+              } catch {
+                return '';
+              }
+            })(),
+          site_name: params.linkMeta?.siteName || '',
+          preview: params.linkMeta?.preview || params.imageUrl || '',
+        }),
+        create_time: now,
+        update_time: now,
+      });
+    }
     // Preserves user's written note/text in card_resources (matching Nothing Android Room schema: raw_type 'TEXT')
     if (params.content && params.content.trim()) {
       cardResources.push({
@@ -450,14 +488,14 @@ export async function createCloudCard(params: {
         raw_type: 'TEXT',
         data: params.content.trim(),
         mime_type: 'text/plain',
-        is_primary: true,
+        is_primary: !params.linkUrl,
         create_time: now,
         update_time: now,
       });
     }
 
     // Compute official Nothing Phone Room database resource_mask bitfield
-    // IMAGE=1, AUDIO=2, RECORDING=4, ATTACHMENT_IMAGE=8, ATTACHMENT_TEXT=16, NOTE_AUDIO=32, NOTE_TEXT=64, TEXT=128, CLIPPED_TEXT=256
+    // IMAGE=1, AUDIO=2, RECORDING=4, ATTACHMENT_IMAGE=8, ATTACHMENT_TEXT=16, NOTE_AUDIO=32, NOTE_TEXT=64, TEXT=128, CLIPPED_TEXT=256, LINK=512
     let resourceMask = 0;
     for (const r of cardResources) {
       switch (r.raw_type) {
@@ -488,14 +526,20 @@ export async function createCloudCard(params: {
         case 'CLIPPED_TEXT':
           resourceMask |= 256;
           break;
+        case 'LINK':
+          resourceMask |= 512;
+          break;
       }
     }
 
-    // Prevent Android Room NullPointerException: IMAGE and AUDIO cards MUST have matching resources
+    // Prevent Android Room NullPointerException: IMAGE, AUDIO, LINK cards MUST have matching resources
     if (newCard.type === 'IMAGE' && !params.imageGcsKey) {
       newCard.type = 'TEXT';
     }
     if (newCard.type === 'AUDIO' && !params.audioGcsKey) {
+      newCard.type = 'TEXT';
+    }
+    if (newCard.type === 'LINK' && !params.linkUrl) {
       newCard.type = 'TEXT';
     }
 
@@ -549,7 +593,7 @@ export async function createCloudCard(params: {
         create_time: now,
         update_time: now,
         resource_mask: resourceMask,
-        capture_from: 'web.essential.space',
+        capture_from: newCard.type === 'LINK' ? 'share_sheet' : 'desktop.essential.space',
       },
       card_resources: cardResources.map((r: any) => ({
         ...r,
@@ -557,6 +601,10 @@ export async function createCloudCard(params: {
       })),
       card_analysis: cardAnalysis,
       card_events: cardEvents,
+      card_collection_cross_ref: targetCollectionIds.map(colId => ({
+        collection_id: colId,
+        create_time: now,
+      })),
     });
 
     const files: any[] = [];
@@ -579,7 +627,7 @@ export async function createCloudCard(params: {
       cards: [
         {
           cardId: newCard.cardId,
-          collectionIds: newCard.collectionId ? [newCard.collectionId] : [],
+          collectionIds: targetCollectionIds,
           categoryId: null,
           client_request_response: clientRequestResponse,
           files,
@@ -607,6 +655,7 @@ export async function createCloudCard(params: {
     }
 
     // Persist to local IndexedDB
+    newCard.rawClientRequestResponse = clientRequestResponse;
     await saveDbCards([newCard]);
 
     return { success: true, card: newCard };
@@ -640,6 +689,9 @@ export async function updateCloudCards(
       payload,
       cipherKey,
       cards: updatedCards.map(c => {
+        const colIds = (c.collectionIds && c.collectionIds.length > 0)
+          ? c.collectionIds
+          : (c.collectionId ? [c.collectionId] : []);
         let cr: any = null;
         if (c.rawClientRequestResponse) {
           try {
@@ -662,6 +714,36 @@ export async function updateCloudCards(
               ...r,
               data: typeof r.data === 'string' ? r.data : '',
             }));
+
+            // Ensure LINK resource is present for LINK cards
+            if (c.type === 'LINK' && c.link?.url) {
+              const hasLink = cr.card_resources.some((r: any) => r.raw_type === 'LINK');
+              if (!hasLink) {
+                cr.card_resources.push({
+                  card_resource_id: generateUuid(),
+                  raw_type: 'LINK',
+                  data: c.link.url,
+                  mime_type: 'text/plain',
+                  is_primary: true,
+                  metadata: JSON.stringify({
+                    fav_icon: c.link.favicon || '',
+                    type: 'website',
+                    title: c.link.title || c.title || '',
+                    description: c.link.description || c.summary || '',
+                    domain: c.link.domain || '',
+                    site_name: c.link.siteName || '',
+                    preview: c.link.preview || c.imageUrl || '',
+                  }),
+                  create_time: c.createTime || now,
+                  update_time: now,
+                });
+              }
+              if (cr.cards) {
+                cr.cards.resource_mask = (cr.cards.resource_mask || 0) | 512;
+                cr.cards.type = 'LINK';
+                if (!cr.cards.capture_from) cr.cards.capture_from = 'share_sheet';
+              }
+            }
           }
 
           // Update checklist items if present
@@ -695,13 +777,51 @@ export async function updateCloudCards(
           }
 
           // Update collection reference
-          if (c.collectionId) {
-            cr.card_collection_cross_ref = [
-              { collection_id: c.collectionId, create_time: now },
-            ];
+          cr.card_collection_cross_ref = colIds.map(id => ({
+            collection_id: id,
+            create_time: now,
+          }));
+          if (cr.cards) {
+            cr.cards.collection_id = colIds[0] || null;
           }
         } else {
           // Construct baseline client_request_response
+          let resourceMask = 0;
+          const baselineResources: any[] = [];
+          if (c.type === 'LINK' && c.link?.url) {
+            baselineResources.push({
+              card_resource_id: generateUuid(),
+              raw_type: 'LINK',
+              data: c.link.url,
+              mime_type: 'text/plain',
+              is_primary: true,
+              metadata: JSON.stringify({
+                fav_icon: c.link.favicon || '',
+                type: 'website',
+                title: c.link.title || c.title || '',
+                description: c.link.description || c.summary || '',
+                domain: c.link.domain || '',
+                site_name: c.link.siteName || '',
+                preview: c.link.preview || c.imageUrl || '',
+              }),
+              create_time: c.createTime || now,
+              update_time: now,
+            });
+            resourceMask |= 512;
+          }
+          if (c.content && c.content.trim()) {
+            baselineResources.push({
+              card_resource_id: generateUuid(),
+              raw_type: 'TEXT',
+              data: c.content.trim(),
+              mime_type: 'text/plain',
+              is_primary: baselineResources.length === 0,
+              create_time: c.createTime || now,
+              update_time: now,
+            });
+            resourceMask |= 128;
+          }
+
           cr = {
             cards: {
               card_id: c.cardId,
@@ -710,9 +830,11 @@ export async function updateCloudCards(
               type: c.type,
               create_time: c.createTime || now,
               update_time: now,
+              resource_mask: resourceMask,
+              capture_from: c.type === 'LINK' ? 'share_sheet' : 'desktop.essential.space',
               target_state: c.targetState || 0,
             },
-            card_resources: [],
+            card_resources: baselineResources,
             card_analysis: [],
             card_events: (c.events || []).map(ev => ({
               type: 2,
@@ -726,9 +848,10 @@ export async function updateCloudCards(
               start_time: -1,
               end_time: -1,
             })),
-            card_collection_cross_ref: c.collectionId
-              ? [{ collection_id: c.collectionId, create_time: now }]
-              : [],
+            card_collection_cross_ref: colIds.map(id => ({
+              collection_id: id,
+              create_time: now,
+            })),
           };
         }
 
@@ -736,7 +859,7 @@ export async function updateCloudCards(
 
         return {
           cardId: c.cardId,
-          collectionIds: c.collectionId ? [c.collectionId] : [],
+          collectionIds: colIds,
           client_request_response: clientRequestResponse,
           files: Array.isArray(c.files) ? c.files : [],
           clientUpdateTime: now,
@@ -1045,7 +1168,7 @@ export async function bulkHardDeleteCloudCards(
 export async function bulkAssignCollectionCloudCards(
   token: string,
   cards: Card[],
-  collectionId?: string | null
+  collectionIdsOrId?: string[] | string | null
 ): Promise<{ success: boolean; error?: string }> {
   if (cards.length === 0) return { success: true };
   try {
@@ -1054,39 +1177,70 @@ export async function bulkAssignCollectionCloudCards(
     const payload = encryptPayload(DEVICE_MODEL, aesKeyB64);
     const itemPayload = encryptPayload('0', aesKeyB64);
 
+    const targetCollectionIds = Array.isArray(collectionIdsOrId)
+      ? collectionIdsOrId.filter((id): id is string => typeof id === 'string' && Boolean(id.trim()))
+      : (collectionIdsOrId ? [collectionIdsOrId] : []);
+
     const body = {
       payload,
       cipherKey,
       cards: cards.map(c => {
-        const clientRequestResponse = JSON.stringify({
-          cards: {
-            card_id: c.cardId,
-            title: c.title,
-            summary: c.summary || c.content || '',
-            type: c.type,
-            create_time: c.createTime || now,
-            update_time: now,
-            target_state: c.targetState || 0,
-          },
-          card_events: (c.events || []).map(ev => ({
-            type: 2,
-            title: ev.title,
-            content: ev.content || '',
-            check: ev.check === 1,
-            is_potential_reminder: ev.isPotentialReminder ? 1 : 0,
-            time: ev.time || now,
-            update_time: now,
-            special_key: ev.eventId,
-            start_time: -1,
-            end_time: -1,
-          })),
-        });
+        let cr: any = null;
+        if (c.rawClientRequestResponse) {
+          try {
+            cr = JSON.parse(c.rawClientRequestResponse);
+          } catch {
+            cr = null;
+          }
+        }
+
+        if (cr && typeof cr === 'object') {
+          if (!cr.cards) cr.cards = {};
+          cr.cards.card_id = c.cardId;
+          cr.cards.update_time = now;
+          cr.cards.collection_id = targetCollectionIds[0] || null;
+          cr.card_collection_cross_ref = targetCollectionIds.map(id => ({
+            collection_id: id,
+            create_time: now,
+          }));
+        } else {
+          cr = {
+            cards: {
+              card_id: c.cardId,
+              title: c.title,
+              summary: c.summary || c.content || '',
+              type: c.type,
+              create_time: c.createTime || now,
+              update_time: now,
+              target_state: c.targetState || 0,
+              collection_id: targetCollectionIds[0] || null,
+            },
+            card_resources: [],
+            card_analysis: [],
+            card_events: (c.events || []).map(ev => ({
+              type: 2,
+              title: ev.title,
+              content: ev.content || '',
+              check: ev.check === 1,
+              is_potential_reminder: ev.isPotentialReminder ? 1 : 0,
+              time: ev.time || now,
+              update_time: now,
+              special_key: ev.eventId,
+              start_time: -1,
+              end_time: -1,
+            })),
+            card_collection_cross_ref: targetCollectionIds.map(id => ({
+              collection_id: id,
+              create_time: now,
+            })),
+          };
+        }
 
         return {
           cardId: c.cardId,
-          collectionIds: collectionId ? [collectionId] : [],
-          client_request_response: clientRequestResponse,
-          files: [],
+          collectionIds: targetCollectionIds,
+          client_request_response: JSON.stringify(cr),
+          files: Array.isArray(c.files) ? c.files : [],
           clientUpdateTime: now,
           payload: itemPayload,
           cipherKey,

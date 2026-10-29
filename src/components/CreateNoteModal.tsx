@@ -14,8 +14,11 @@ import {
   Loader2,
   Trash2,
   Plus,
+  ExternalLink,
+  Folder,
 } from 'lucide-react';
-import type { Collection, Card } from '@/types';
+import type { Collection, Card, CardLink } from '@/types';
+import { createCloudCollection } from '@/lib/nothing-collections';
 import {
   requestNothingAiAnalysis,
   requestAudioAiAnalysis,
@@ -24,6 +27,7 @@ import {
 import { convertToWebP } from '@/lib/image-optimizer';
 import { uploadMediaToGcs } from '@/lib/firebase-upload';
 import { useScrollLock } from '@/lib/useScrollLock';
+import { fetchLinkPreview, normalizeUrl } from '@/lib/link-preview';
 
 interface CreateNoteModalProps {
   isOpen: boolean;
@@ -33,6 +37,7 @@ interface CreateNoteModalProps {
   token: string;
   userId: string;
   onCardCreated: (card: Card) => void;
+  onCollectionCreated?: (col: Collection) => void;
 }
 
 type TabType = 'NOTE' | 'LINK' | 'IMAGE' | 'VOICE';
@@ -45,11 +50,20 @@ export default function CreateNoteModal({
   token,
   userId,
   onCardCreated,
+  onCollectionCreated,
 }: CreateNoteModalProps) {
   const [tab, setTab] = useState<TabType>('NOTE');
   const [content, setContent] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
-  const [selectedCollection, setSelectedCollection] = useState(activeCollectionId || '');
+  const [linkPreview, setLinkPreview] = useState<CardLink | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>(
+    activeCollectionId ? [activeCollectionId] : []
+  );
+  const [showColInput, setShowColInput] = useState(false);
+  const [newColName, setNewColName] = useState('');
+  const [isCreatingCol, setIsCreatingCol] = useState(false);
+  const [createColError, setCreateColError] = useState<string | null>(null);
   const [useAi, setUseAi] = useState(true);
 
   // Lock background page scroll while modal is open
@@ -78,9 +92,37 @@ export default function CreateNoteModal({
 
   useEffect(() => {
     if (activeCollectionId) {
-      setSelectedCollection(activeCollectionId);
+      setSelectedCollectionIds(prev => (prev.includes(activeCollectionId) ? prev : [...prev, activeCollectionId]));
     }
   }, [activeCollectionId]);
+
+  const toggleCollection = (colId: string) => {
+    setSelectedCollectionIds(prev =>
+      prev.includes(colId) ? prev.filter(id => id !== colId) : [...prev, colId]
+    );
+  };
+
+  const handleCreateCollection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = newColName.trim();
+    if (!name) return;
+    setIsCreatingCol(true);
+    setCreateColError(null);
+    try {
+      const res = await createCloudCollection(token, userId, name);
+      if (!res.success || !res.collection) {
+        throw new Error(res.error || 'Failed to create collection');
+      }
+      onCollectionCreated?.(res.collection);
+      setSelectedCollectionIds(prev => [...prev, res.collection!.collectionId]);
+      setNewColName('');
+      setShowColInput(false);
+    } catch (err: any) {
+      setCreateColError(err?.message || 'Failed to create collection');
+    } finally {
+      setIsCreatingCol(false);
+    }
+  };
 
   // Adjust visible attachments based on selected primary tab
   useEffect(() => {
@@ -91,10 +133,41 @@ export default function CreateNoteModal({
     }
   }, [tab]);
 
+  // Debounced link preview fetching when entering a URL
+  useEffect(() => {
+    if (tab !== 'LINK') return;
+    const trimmed = linkUrl.trim();
+    if (!trimmed || trimmed.length < 4 || !trimmed.includes('.')) {
+      setLinkPreview(null);
+      setIsLoadingPreview(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsLoadingPreview(true);
+      try {
+        const meta = await fetchLinkPreview(trimmed);
+        setLinkPreview(meta);
+      } catch (err) {
+        console.warn('Failed to load link preview:', err);
+      } finally {
+        setIsLoadingPreview(false);
+      }
+    }, 450);
+
+    return () => clearTimeout(timer);
+  }, [linkUrl, tab]);
+
   useEffect(() => {
     if (!isOpen) {
       setContent('');
       setLinkUrl('');
+      setLinkPreview(null);
+      setIsLoadingPreview(false);
+      setSelectedCollectionIds(activeCollectionId ? [activeCollectionId] : []);
+      setShowColInput(false);
+      setNewColName('');
+      setCreateColError(null);
       setImageFile(null);
       setImagePreview(null);
       setAudioBlob(null);
@@ -106,7 +179,7 @@ export default function CreateNoteModal({
       setError(null);
       if (timerRef.current) clearInterval(timerRef.current);
     }
-  }, [isOpen]);
+  }, [isOpen, activeCollectionId]);
 
   if (!isOpen) return null;
 
@@ -192,6 +265,22 @@ export default function CreateNoteModal({
       if (tab === 'LINK' && !linkUrl.trim()) {
         throw new Error('Please enter a valid URL');
       }
+
+      let normalizedLink = linkUrl.trim();
+      let activeMeta = linkPreview;
+      if (tab === 'LINK') {
+        normalizedLink = normalizeUrl(normalizedLink);
+        if (!activeMeta || activeMeta.url !== normalizedLink) {
+          setStatusText('Fetching link preview & OpenGraph metadata...');
+          try {
+            activeMeta = await fetchLinkPreview(normalizedLink);
+            setLinkPreview(activeMeta);
+          } catch {
+            // fallback handled in fetchLinkPreview
+          }
+        }
+      }
+
       if (tab === 'NOTE' && !content.trim() && !hasImage && !hasAudio) {
         throw new Error('Please enter note text or attach media');
       }
@@ -259,7 +348,7 @@ export default function CreateNoteModal({
           aiResult = await requestAudioAiAnalysis({
             token,
             s3FileKey: audioGcsKey,
-            imageS3FileKey: imageGcsKey, // Attached image passed directly to Gemini 2.0 Flash!
+            imageS3FileKey: imageGcsKey,
             audioDurationMs: recordingDuration * 1000,
             userText: content,
           });
@@ -278,7 +367,14 @@ export default function CreateNoteModal({
           aiResult = await requestNothingAiAnalysis({
             token,
             promptType: 'SHARE_SHEET',
-            url: linkUrl,
+            url: normalizedLink,
+            linkPreviewMeta: activeMeta
+              ? {
+                  title: activeMeta.title,
+                  description: activeMeta.description,
+                  preview: activeMeta.preview,
+                }
+              : undefined,
             userText: content,
           });
         } else {
@@ -293,7 +389,6 @@ export default function CreateNoteModal({
       }
 
       // 4. Determine Card Type
-      // In Nothing OS, if audio is present, card type is AUDIO (AudioCard renders both image and audio player!)
       let finalCardType: Card['type'] = 'TEXT';
       if (hasAudio) {
         finalCardType = 'AUDIO';
@@ -312,7 +407,7 @@ export default function CreateNoteModal({
         title:
           aiResult?.title ||
           (tab === 'LINK'
-            ? linkUrl
+            ? activeMeta?.title || normalizedLink
             : content.trim()
             ? content.trim().slice(0, 40)
             : hasAudio && hasImage
@@ -321,17 +416,23 @@ export default function CreateNoteModal({
             ? 'Voice Memo'
             : 'Photo Note'),
         content,
-        summary: aiResult?.summary || (content.trim() ? content.trim() : undefined),
-        imageUrl: finalImageUrl,
+        summary:
+          aiResult?.summary ||
+          (tab === 'LINK'
+            ? activeMeta?.description
+            : (content.trim() ? content.trim() : undefined)),
+        imageUrl: (tab === 'LINK' ? activeMeta?.preview : undefined) || finalImageUrl,
         cachedImageUrl: localDataUrl,
         imageGcsKey,
-        collectionId: selectedCollection || undefined,
+        collectionId: selectedCollectionIds[0] || undefined,
+        collectionIds: selectedCollectionIds,
         tags: aiResult?.tags,
         bulletPoints: aiResult?.bulletPoints,
         bulletPointsTitle: aiResult?.bulletPointsTitle,
         infoExtract: aiResult?.infoExtract,
         events: aiResult?.events,
-        linkUrl: tab === 'LINK' ? linkUrl : undefined,
+        linkUrl: tab === 'LINK' ? normalizedLink : undefined,
+        linkMeta: tab === 'LINK' ? activeMeta || undefined : undefined,
         audio: finalAudioUri
           ? {
               audioUri: finalAudioUri,
@@ -454,18 +555,99 @@ export default function CreateNoteModal({
 
           {/* Link URL input (for Link tab) */}
           {tab === 'LINK' && (
-            <div>
-              <label className="block text-[11px] font-mono text-nothing-gray uppercase mb-1.5">
-                Target Web URL
-              </label>
-              <input
-                type="url"
-                required
-                value={linkUrl}
-                onChange={e => setLinkUrl(e.target.value)}
-                placeholder="https://example.com/article"
-                className="w-full px-3.5 py-2 rounded-xl bg-black border border-nothing-border text-xs text-white placeholder:text-nothing-gray/50 focus:outline-none focus:border-white transition-colors font-mono"
-              />
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-mono text-nothing-gray uppercase mb-1.5 flex items-center justify-between">
+                  <span>Target Web URL</span>
+                  {linkPreview && (
+                    <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                      <Check size={11} strokeWidth={3} />
+                      {linkPreview.domain}
+                    </span>
+                  )}
+                </label>
+                <div className="relative">
+                  <input
+                    type="url"
+                    required
+                    value={linkUrl}
+                    onChange={e => setLinkUrl(e.target.value)}
+                    placeholder="https://example.com/article"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-nothing-border text-xs text-white placeholder:text-nothing-gray/50 focus:outline-none focus:border-white transition-colors font-mono"
+                  />
+                  {isLoadingPreview && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                      <Loader2 size={13} className="animate-spin text-nothing-red" />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Live Preview Card */}
+              {isLoadingPreview && !linkPreview && (
+                <div className="p-3.5 rounded-xl bg-black/40 border border-dashed border-nothing-border/60 flex items-center gap-2.5 text-xs font-mono text-nothing-gray animate-pulse">
+                  <Loader2 size={14} className="animate-spin text-nothing-red shrink-0" />
+                  <span>Loading website preview & OpenGraph data...</span>
+                </div>
+              )}
+
+              {linkPreview && (
+                <div className="rounded-xl bg-[#151515] border border-nothing-border overflow-hidden p-3.5 space-y-2.5 transition-all animate-fadeIn">
+                  <div className="flex items-center justify-between text-[11px] font-mono text-nothing-gray">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {linkPreview.favicon ? (
+                        <img
+                          src={linkPreview.favicon}
+                          alt=""
+                          className="w-4 h-4 rounded shrink-0 object-contain"
+                          onError={e => {
+                            (e.target as HTMLElement).style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <Bookmark size={13} className="text-nothing-red shrink-0" />
+                      )}
+                      <span className="truncate text-white font-medium">
+                        {linkPreview.siteName || linkPreview.domain}
+                      </span>
+                    </div>
+                    <a
+                      href={linkPreview.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-nothing-gray hover:text-white flex items-center gap-1 text-[10px]"
+                      title="Open Link"
+                    >
+                      <span>Visit</span>
+                      <ExternalLink size={10} />
+                    </a>
+                  </div>
+
+                  {linkPreview.preview && (
+                    <div className="w-full h-36 rounded-lg overflow-hidden bg-black relative border border-nothing-border/40">
+                      <img
+                        src={linkPreview.preview}
+                        alt=""
+                        className="w-full h-full object-cover object-top"
+                        onError={e => {
+                          (e.target as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <h4 className="text-xs font-medium text-white line-clamp-1">
+                      {linkPreview.title}
+                    </h4>
+                    {linkPreview.description && (
+                      <p className="text-[11px] text-nothing-gray line-clamp-2 mt-0.5 leading-relaxed font-mono">
+                        {linkPreview.description}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -492,7 +674,6 @@ export default function CreateNoteModal({
               <label className="relative flex flex-col items-center justify-center w-full h-36 rounded-xl border border-dashed border-nothing-border hover:border-white/50 cursor-pointer bg-black/40 overflow-hidden group transition-colors">
                 {imagePreview ? (
                   <>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={imagePreview} alt="Preview" className="w-full h-full object-contain" />
                     <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-xs font-mono text-white transition-opacity">
                       Click to replace photo
@@ -578,7 +759,7 @@ export default function CreateNoteModal({
             </div>
           )}
 
-          {/* Quick Attachment Toggles (Allows combining Photo + Voice in any mode!) */}
+          {/* Quick Attachment Toggles */}
           <div className="flex items-center gap-2 pt-1">
             <span className="text-[10px] font-mono text-nothing-gray uppercase">Attachments:</span>
             {!showImageAttachment && tab !== 'IMAGE' && (
@@ -632,26 +813,117 @@ export default function CreateNoteModal({
             />
           </div>
 
-          {/* Collection & AI toggles */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-nothing-border/40">
-            {/* Collection dropdown */}
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono text-nothing-gray uppercase">Collection:</span>
-              <select
-                value={selectedCollection}
-                onChange={e => setSelectedCollection(e.target.value)}
-                className="px-2.5 py-1.5 rounded-lg bg-black border border-nothing-border text-xs font-mono text-white focus:outline-none focus:border-white"
-              >
-                <option value="">None (Inbox)</option>
-                {collections.map(c => (
-                  <option key={c.collectionId} value={c.collectionId}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+          {/* Collections Multi-Select Section */}
+          <div className="pt-3 border-t border-nothing-border/40 space-y-2.5">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <span className="text-[11px] text-nothing-gray uppercase flex items-center gap-1.5">
+                <Folder size={12} className="text-nothing-red" />
+                <span>Collections</span>
+                {selectedCollectionIds.length > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-nothing-red/20 text-nothing-red text-[10px] font-semibold">
+                    {selectedCollectionIds.length}
+                  </span>
+                )}
+              </span>
+
+              <div className="flex items-center gap-2.5">
+                {selectedCollectionIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCollectionIds([])}
+                    className="text-[10px] text-nothing-gray hover:text-white underline font-mono"
+                  >
+                    Clear
+                  </button>
+                )}
+                {!showColInput && (
+                  <button
+                    type="button"
+                    onClick={() => setShowColInput(true)}
+                    className="text-[10px] text-nothing-red hover:underline flex items-center gap-0.5 font-mono"
+                  >
+                    <Plus size={11} />
+                    <span>+ New Collection</span>
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* AI pipeline toggle */}
+            {/* Inline collection creator */}
+            {showColInput && (
+              <div className="flex items-center gap-2 p-2 rounded-xl bg-black border border-nothing-border animate-fadeIn">
+                <input
+                  type="text"
+                  autoFocus
+                  value={newColName}
+                  onChange={e => setNewColName(e.target.value)}
+                  placeholder="Collection name..."
+                  className="flex-1 bg-transparent text-xs font-mono text-white placeholder-nothing-gray focus:outline-none px-1"
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleCreateCollection(e);
+                    } else if (e.key === 'Escape') {
+                      setShowColInput(false);
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={isCreatingCol || !newColName.trim()}
+                  onClick={handleCreateCollection}
+                  className="px-2.5 py-1 rounded-lg bg-nothing-red text-white text-[11px] font-dot uppercase tracking-wider disabled:opacity-50 flex items-center gap-1 shadow-sm"
+                >
+                  {isCreatingCol ? <Loader2 size={10} className="animate-spin" /> : <Plus size={10} />}
+                  <span>Add</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowColInput(false)}
+                  className="p-1 text-nothing-gray hover:text-white"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
+            {createColError && (
+              <p className="text-[10px] font-mono text-nothing-red">{createColError}</p>
+            )}
+
+            {/* Multi-Select Collection Chips */}
+            <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto pr-1">
+              {collections.map(c => {
+                const isSelected = selectedCollectionIds.includes(c.collectionId);
+                return (
+                  <button
+                    key={c.collectionId}
+                    type="button"
+                    onClick={() => toggleCollection(c.collectionId)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono transition-all border ${
+                      isSelected
+                        ? 'bg-nothing-red text-white border-nothing-red shadow-sm'
+                        : 'bg-black/40 border-nothing-border text-nothing-gray hover:text-white hover:border-white/40'
+                    }`}
+                  >
+                    {isSelected ? (
+                      <Check size={11} strokeWidth={3} />
+                    ) : (
+                      <Folder size={11} className="text-nothing-gray" />
+                    )}
+                    <span>{c.name}</span>
+                  </button>
+                );
+              })}
+              {collections.length === 0 && (
+                <span className="text-[11px] font-mono text-nothing-gray italic">
+                  No collections available. Create one using the button above.
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* AI pipeline toggle */}
+          <div className="pt-2.5 border-t border-nothing-border/40 flex items-center justify-between">
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -659,9 +931,9 @@ export default function CreateNoteModal({
                 onChange={e => setUseAi(e.target.checked)}
                 className="rounded bg-black border-nothing-border text-nothing-red focus:ring-0"
               />
-              <span className="inline-flex items-center gap-1 text-[11px] font-mono text-white">
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-mono text-white">
                 <Sparkles size={11} className="text-nothing-red" />
-                <span>Nothing Cloud AI</span>
+                <span>Nothing Cloud AI Analysis</span>
               </span>
             </label>
           </div>

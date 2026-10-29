@@ -9,6 +9,11 @@ import {
   User,
   LogOut,
   Loader2,
+  RefreshCw,
+  Download,
+  Sparkles,
+  ShieldCheck,
+  ExternalLink,
 } from 'lucide-react';
 import { isEnabled, enable, disable } from '@tauri-apps/plugin-autostart';
 import {
@@ -19,6 +24,7 @@ import {
   isTauri,
 } from '@/lib/shortcuts';
 import { useScrollLock } from '@/lib/useScrollLock';
+import { checkForUpdates, openDownloadUrl, CURRENT_APP_VERSION, type UpdateInfo } from '@/lib/updater';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -44,6 +50,24 @@ export default function SettingsModal({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isAutostartLoading, setIsAutostartLoading] = useState<boolean>(false);
+
+  // Updater state
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateInfo | null>(null);
+  const [hasCheckedUpdate, setHasCheckedUpdate] = useState(false);
+
+  const handleCheckUpdate = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      const info = await checkForUpdates(CURRENT_APP_VERSION);
+      setUpdateResult(info);
+      setHasCheckedUpdate(true);
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Failed to check for updates');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   useScrollLock(isOpen);
 
@@ -300,6 +324,92 @@ export default function SettingsModal({
                 <LogOut size={13} />
                 <span>Log Out</span>
               </button>
+            </div>
+          </div>
+
+          {/* Section 4: Application & Updates */}
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              <Sparkles size={16} className="text-nothing-red" />
+              <span className="font-dot text-xs text-white uppercase tracking-wider font-semibold">
+                APPLICATION & UPDATES
+              </span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-nothing-dark border border-nothing-border flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <div className="flex flex-col">
+                  <span className="text-xs font-mono text-white font-semibold">
+                    Essential Space Desktop
+                  </span>
+                  <span className="text-[11px] font-mono text-nothing-gray">
+                    Installed Version: <span className="text-white">v{CURRENT_APP_VERSION}</span>
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleCheckUpdate}
+                  disabled={isCheckingUpdate}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono bg-nothing-card hover:bg-nothing-hover border border-nothing-border text-white transition-all active:scale-95 disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={isCheckingUpdate ? 'animate-spin text-nothing-red' : ''} />
+                  <span>{isCheckingUpdate ? 'CHECKING...' : 'CHECK FOR UPDATES'}</span>
+                </button>
+              </div>
+
+              {/* Update Check Results */}
+              {hasCheckedUpdate && updateResult && (
+                <div className="pt-2 border-t border-nothing-border/50 flex flex-col gap-2">
+                  {updateResult.hasUpdate ? (
+                    <div className="flex flex-col gap-2 bg-nothing-red/[0.08] border border-nothing-red/30 p-2.5 rounded-lg">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-nothing-red animate-pulse" />
+                          New version available: {updateResult.latestVersion}
+                        </span>
+                        <a
+                          href={updateResult.htmlUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={e => {
+                            e.preventDefault();
+                            openDownloadUrl(updateResult.htmlUrl);
+                          }}
+                          className="text-[10px] text-nothing-red hover:underline flex items-center gap-1"
+                        >
+                          <span>Release Notes</span>
+                          <ExternalLink size={10} />
+                        </a>
+                      </div>
+
+                      <div className="flex items-center gap-1 text-[11px] text-green-400">
+                        <ShieldCheck size={12} />
+                        <span>Installers safely update on top of current version with 100% data preservation.</span>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-[10px] text-nothing-gray font-mono truncate max-w-[220px]">
+                          Asset: {updateResult.assetName}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => openDownloadUrl(updateResult.downloadUrl)}
+                          className="flex items-center gap-1.5 px-3 py-1 rounded bg-nothing-red hover:bg-red-600 text-white font-dot text-xs font-semibold tracking-wider transition-all shadow-sm active:scale-95"
+                        >
+                          <Download size={12} />
+                          <span>DOWNLOAD & UPDATE</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs font-mono text-green-400 bg-green-950/40 p-2 rounded-lg border border-green-900/50">
+                      <Check size={14} />
+                      <span>You are running the latest version of Essential Space!</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

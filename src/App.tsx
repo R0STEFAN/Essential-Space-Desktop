@@ -13,6 +13,8 @@ import SelectCollectionModal from '@/components/SelectCollectionModal';
 import QuickCaptureModal from '@/components/QuickCaptureModal';
 import SettingsModal from '@/components/SettingsModal';
 import LoginView from '@/components/LoginView';
+import UpdateBanner from '@/components/UpdateBanner';
+import { checkForUpdates, CURRENT_APP_VERSION, type UpdateInfo } from '@/lib/updater';
 import {
   getDbCards,
   getDbCollections,
@@ -72,6 +74,20 @@ export default function App() {
   const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
   const [isSelectCollectionModalOpen, setIsSelectCollectionModalOpen] = useState(false);
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+
+  // GitHub Releases update tracking
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [isUpdateDismissed, setIsUpdateDismissed] = useState(false);
+
+  useEffect(() => {
+    checkForUpdates(CURRENT_APP_VERSION)
+      .then(info => {
+        if (info.hasUpdate) {
+          setUpdateInfo(info);
+        }
+      })
+      .catch(err => console.warn('Silent update check failed:', err));
+  }, []);
 
   // Load auth state from IndexedDB
   const checkAuth = useCallback(async () => {
@@ -178,6 +194,7 @@ export default function App() {
 
   // Card-Collection matcher
   const cardMatchesCollection = useCallback((card: Card, col: Collection) => {
+    if (card.collectionIds && card.collectionIds.includes(col.collectionId)) return true;
     if (card.collectionId && card.collectionId === col.collectionId) return true;
     if (col.name && Array.isArray(card.tags)) {
       const colNameLower = col.name.trim().toLowerCase();
@@ -192,10 +209,19 @@ export default function App() {
 
     if (collections.length > 0) {
       const collMap = new Map(collections.map(col => [col.collectionId, col.name]));
-      result = result.map(c => ({
-        ...c,
-        collectionName: c.collectionName || (c.collectionId ? collMap.get(c.collectionId) : undefined),
-      }));
+      result = result.map(c => {
+        const colNames = c.collectionIds
+          ? c.collectionIds.map(id => collMap.get(id)).filter((n): n is string => Boolean(n))
+          : [];
+        return {
+          ...c,
+          collectionNames: colNames.length > 0 ? colNames : (c.collectionNames || []),
+          collectionName:
+            colNames.length > 0
+              ? colNames.join(', ')
+              : (c.collectionId ? collMap.get(c.collectionId) : c.collectionName),
+        };
+      });
     }
 
     if (activeCollection) {
@@ -401,21 +427,43 @@ export default function App() {
     }
   };
 
-  const handleBulkAssignCollection = async (collectionId: string | null) => {
+  const handleBulkAssignCollection = async (
+    collectionIds: string[],
+    collectionNames?: string[]
+  ) => {
     if (!currentUser || selectedCardIds.size === 0) return;
     setIsBulkProcessing(true);
-    const targetCards = allDbCards.filter(c => selectedCardIds.has(c.cardId));
+    const ids = Array.from(selectedCardIds);
+    const joinedNames =
+      collectionNames && collectionNames.length > 0 ? collectionNames.join(', ') : undefined;
     try {
-      await bulkAssignCollectionCloudCards(currentUser.token, targetCards, collectionId);
       const now = Date.now();
-      for (const card of targetCards) {
-        await updateDbCard(card.cardId, { collectionId: collectionId || undefined, updateTime: now });
-      }
       setAllDbCards(prev =>
-        prev.map(c =>
-          selectedCardIds.has(c.cardId) ? { ...c, collectionId: collectionId || undefined, updateTime: now } : c
-        )
+        prev.map(c => {
+          if (selectedCardIds.has(c.cardId)) {
+            return {
+              ...c,
+              collectionIds,
+              collectionId: collectionIds[0] || undefined,
+              collectionNames,
+              collectionName: joinedNames,
+              updateTime: now,
+            };
+          }
+          return c;
+        })
       );
+      for (const id of ids) {
+        await updateDbCard(id, {
+          collectionIds,
+          collectionId: collectionIds[0] || undefined,
+          collectionNames,
+          collectionName: joinedNames,
+          updateTime: now,
+        });
+      }
+      const targetCards = allDbCards.filter(c => selectedCardIds.has(c.cardId));
+      await bulkAssignCollectionCloudCards(currentUser.token, targetCards, collectionIds);
       setSelectedCardIds(new Set());
       setIsSelectMode(false);
       setIsSelectCollectionModalOpen(false);
@@ -446,6 +494,14 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-black text-[#E6E6E6] flex flex-col font-mono selection:bg-nothing-red selection:text-white pb-24">
+      {/* Optional Update Banner */}
+      {updateInfo && !isUpdateDismissed && (
+        <UpdateBanner
+          updateInfo={updateInfo}
+          onDismiss={() => setIsUpdateDismissed(true)}
+        />
+      )}
+
       {/* Top Navigation */}
       <Navbar
         userEmail={currentUser.email}
@@ -515,6 +571,20 @@ export default function App() {
               onToggleSelect={handleToggleSelectCard}
               onRestoreCard={handleRestoreSingleCard}
               onDeleteCard={handleDeleteSingleCard}
+              collections={collections}
+              token={currentUser.token}
+              userId={currentUser.uuid}
+              onCardUpdated={updatedCard => {
+                setAllDbCards(prev =>
+                  prev.map(c => (c.cardId === updatedCard.cardId ? updatedCard : c))
+                );
+              }}
+              onOpenCreateCollection={() =>
+                setCollectionModalState({ isOpen: true, mode: 'CREATE' })
+              }
+              onCollectionCreated={savedCol => {
+                setCollections(prev => [...prev, savedCol]);
+              }}
             />
           </div>
         )}
@@ -580,6 +650,21 @@ export default function App() {
         <CardDetailModal
           card={modalCard}
           onClose={() => setModalCard(null)}
+          collections={collections}
+          token={currentUser.token}
+          userId={currentUser.uuid}
+          onCardUpdated={updatedCard => {
+            setModalCard(updatedCard);
+            setAllDbCards(prev =>
+              prev.map(c => (c.cardId === updatedCard.cardId ? updatedCard : c))
+            );
+          }}
+          onOpenCreateCollection={() =>
+            setCollectionModalState({ isOpen: true, mode: 'CREATE' })
+          }
+          onCollectionCreated={savedCol => {
+            setCollections(prev => [...prev, savedCol]);
+          }}
           onToggleTodo={handleToggleTodo}
           onRestoreCard={handleRestoreSingleCard}
           onDeleteCard={handleDeleteSingleCard}
@@ -619,9 +704,14 @@ export default function App() {
           onClose={() => setIsSelectCollectionModalOpen(false)}
           collections={collections}
           selectedCardCount={selectedCardIds.size}
-          onAssign={colId => handleBulkAssignCollection(colId)}
+          token={currentUser.token}
+          userId={currentUser.uuid}
+          onAssign={handleBulkAssignCollection}
           onOpenCreateCollection={() => {
             setCollectionModalState({ isOpen: true, mode: 'CREATE' });
+          }}
+          onCollectionCreated={savedCol => {
+            setCollections(prev => [...prev, savedCol]);
           }}
         />
       )}
@@ -637,6 +727,9 @@ export default function App() {
           userId={currentUser.uuid}
           onCardCreated={newCard => {
             setAllDbCards(prev => [newCard, ...prev]);
+          }}
+          onCollectionCreated={savedCol => {
+            setCollections(prev => [...prev, savedCol]);
           }}
         />
       )}
