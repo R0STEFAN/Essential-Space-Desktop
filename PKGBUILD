@@ -1,6 +1,6 @@
 # Maintainer: R0STEFAN
 pkgname=essential-space-desktop-bin
-pkgver=1.0.8
+pkgver=1.0.9
 pkgrel=1
 pkgdesc="Essential Space Desktop Native Companion for Nothing OS"
 arch=('x86_64')
