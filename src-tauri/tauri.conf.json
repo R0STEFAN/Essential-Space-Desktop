@@ -46,7 +46,7 @@
         "language": "en-US"
       },
       "nsis": {
-        "languages": ["en-US"]
+        "languages": ["English"]
       }
     },
     "linux": {
