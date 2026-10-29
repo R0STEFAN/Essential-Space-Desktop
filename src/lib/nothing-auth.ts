@@ -84,7 +84,14 @@ function formatCookieHeader(cookieJar: Record<string, string>): string {
 
 function extractSetCookies(res: Response, cookieJar: Record<string, string>) {
   let setCookies: string[] = [];
-  if (typeof (res.headers as any).getSetCookie === 'function') {
+  if (Array.isArray((res as any).rawHeaders)) {
+    for (const [k, v] of (res as any).rawHeaders) {
+      if (typeof k === 'string' && k.toLowerCase() === 'set-cookie' && v) {
+        setCookies.push(v);
+      }
+    }
+  }
+  if (!setCookies.length && typeof (res.headers as any).getSetCookie === 'function') {
     setCookies = (res.headers as any).getSetCookie() || [];
   }
   if (!setCookies.length) {
@@ -172,6 +179,7 @@ async function buildDeviceHeaders(
     'X-App-Signature': appSig,
     'X-Device-Signature': devSig,
     'User-Agent': USER_AGENT,
+    'Origin': SSO_ORIGIN,
     ...extraHeaders,
   };
 }
@@ -276,6 +284,7 @@ async function getOrCreateDeviceIdentity(cookies: Record<string, string>): Promi
       'X-Nonce': nonce,
       'X-App-Signature': appSig,
       'User-Agent': USER_AGENT,
+      'Origin': SSO_ORIGIN,
     },
     body: deviceInfoStr,
   });

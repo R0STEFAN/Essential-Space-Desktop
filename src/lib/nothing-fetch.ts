@@ -11,87 +11,116 @@ const ERROR_REQUEST_CANCELLED = 'Request cancelled';
 
 /**
  * Native Direct Fetcher for Nothing Cloud API.
- * Uses Tauri v2 IPC ('plugin:http|fetch') directly, strictly stripping browser CORS
- * headers (such as `origin`, `referer`, `sec-fetch-*`) that cause Nothing's gateway
- * to reject requests with HTTP 403.
+ * Uses Tauri v2 IPC ('plugin:http|fetch') directly, ensuring target origin spoofing
+ * and strictly stripping browser CORS headers (such as `origin: http://tauri.localhost`,
+ * `sec-fetch-*`) that cause Nothing's Cloudflare / AWS CloudFront gateway to reject
+ * requests with HTTP 403.
  */
 export async function nothingFetch(
   targetUrl: string,
   options: NativeFetchOptions = {}
 ): Promise<Response> {
-  const isTauri =
-    typeof window !== 'undefined' &&
-    ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
+  const signal = options.signal;
+  if (signal?.aborted) {
+    throw new Error(ERROR_REQUEST_CANCELLED);
+  }
 
-  if (isTauri) {
-    const signal = options.signal;
-    if (signal?.aborted) {
-      throw new Error(ERROR_REQUEST_CANCELLED);
+  const method = (options.method || 'GET').toUpperCase();
+  let maxRedirections = options.maxRedirections;
+  if (options.redirect === 'manual' && maxRedirections === undefined) {
+    maxRedirections = 0;
+  }
+
+  // Process body into number[] byte array
+  let data: number[] | null = null;
+  if (options.body) {
+    if (typeof options.body === 'string') {
+      const encoded = new TextEncoder().encode(options.body);
+      data = Array.from(encoded);
+    } else if (options.body instanceof ArrayBuffer) {
+      data = Array.from(new Uint8Array(options.body));
+    } else if (ArrayBuffer.isView(options.body)) {
+      data = Array.from(
+        new Uint8Array(options.body.buffer, options.body.byteOffset, options.body.byteLength)
+      );
+    } else {
+      const blob = await new Response(options.body).blob();
+      const buf = await blob.arrayBuffer();
+      data = Array.from(new Uint8Array(buf));
     }
+  }
 
-    const method = (options.method || 'GET').toUpperCase();
-    let maxRedirections = options.maxRedirections;
-    if (options.redirect === 'manual' && maxRedirections === undefined) {
-      maxRedirections = 0;
-    }
+  let targetOrigin = '';
+  try {
+    targetOrigin = new URL(targetUrl).origin;
+  } catch {}
 
-    // Process body into number[] byte array
-    let data: number[] | null = null;
-    if (options.body) {
-      if (typeof options.body === 'string') {
-        const encoded = new TextEncoder().encode(options.body);
-        data = Array.from(encoded);
-      } else if (options.body instanceof ArrayBuffer) {
-        data = Array.from(new Uint8Array(options.body));
-      } else if (ArrayBuffer.isView(options.body)) {
-        data = Array.from(
-          new Uint8Array(options.body.buffer, options.body.byteOffset, options.body.byteLength)
-        );
+  // Strip browser-injected / CORS headers that trigger Cloudflare / CloudFront 403 blocks
+  const BLOCKED_HEADERS = new Set([
+    'sec-fetch-mode',
+    'sec-fetch-site',
+    'sec-fetch-dest',
+    'sec-ch-ua',
+    'sec-ch-ua-mobile',
+    'sec-ch-ua-platform',
+    'host',
+  ]);
+
+  let hasOrigin = false;
+  const mappedHeaders: [string, string][] = [];
+
+  const addHeader = (rawKey: string, rawVal: any) => {
+    if (rawVal === undefined || rawVal === null) return;
+    const key = rawKey.trim();
+    const lower = key.toLowerCase();
+    if (BLOCKED_HEADERS.has(lower)) return;
+
+    if (lower === 'origin') {
+      hasOrigin = true;
+      const strVal = String(rawVal);
+      if (!strVal || strVal.includes('localhost') || strVal.includes('tauri:')) {
+        if (targetOrigin) mappedHeaders.push(['Origin', targetOrigin]);
       } else {
-        const blob = await new Response(options.body).blob();
-        const buf = await blob.arrayBuffer();
-        data = Array.from(new Uint8Array(buf));
+        mappedHeaders.push(['Origin', strVal]);
       }
+      return;
     }
 
-    // Normalize and filter headers:
-    // Strip forbidden / browser-injected headers that cause Cloudflare/Nothing WAF to 403
-    const BLOCKED_HEADERS = new Set([
-      'origin',
-      'referer',
-      'sec-fetch-mode',
-      'sec-fetch-site',
-      'sec-fetch-dest',
-      'sec-ch-ua',
-      'sec-ch-ua-mobile',
-      'sec-ch-ua-platform',
-      'host',
-    ]);
-
-    const mappedHeaders: [string, string][] = [];
-
-    if (options.headers) {
-      if (options.headers instanceof Headers) {
-        options.headers.forEach((value, key) => {
-          if (!BLOCKED_HEADERS.has(key.toLowerCase())) {
-            mappedHeaders.push([key, String(value)]);
-          }
-        });
-      } else if (Array.isArray(options.headers)) {
-        for (const [key, value] of options.headers) {
-          if (!BLOCKED_HEADERS.has(key.toLowerCase())) {
-            mappedHeaders.push([key, String(value)]);
-          }
-        }
-      } else if (typeof options.headers === 'object') {
-        for (const [key, value] of Object.entries(options.headers)) {
-          if (value !== undefined && value !== null && !BLOCKED_HEADERS.has(key.toLowerCase())) {
-            mappedHeaders.push([key, String(value)]);
-          }
-        }
+    if (lower === 'referer') {
+      const strVal = String(rawVal);
+      if (strVal.includes('localhost') || strVal.includes('tauri:')) {
+        if (targetOrigin) mappedHeaders.push(['Referer', `${targetOrigin}/`]);
+      } else {
+        mappedHeaders.push([key, strVal]);
       }
+      return;
     }
 
+    mappedHeaders.push([key, String(rawVal)]);
+  };
+
+  if (options.headers) {
+    if (options.headers instanceof Headers) {
+      options.headers.forEach((value, key) => addHeader(key, value));
+    } else if (Array.isArray(options.headers)) {
+      for (const [key, value] of options.headers) {
+        addHeader(key, value);
+      }
+    } else if (typeof options.headers === 'object') {
+      for (const [key, value] of Object.entries(options.headers)) {
+        addHeader(key, value);
+      }
+    }
+  }
+
+  // CRUCIAL: If no Origin was provided, supply the target URL's origin.
+  // Otherwise, tauri-plugin-http's Rust client injects 'Origin: http://tauri.localhost',
+  // which causes Cloudflare / Nothing CloudFront to immediately return HTTP 403 Forbidden!
+  if (!hasOrigin && targetOrigin) {
+    mappedHeaders.push(['Origin', targetOrigin]);
+  }
+
+  try {
     const rid = await invoke<number>('plugin:http|fetch', {
       clientConfig: {
         method,
@@ -127,10 +156,12 @@ export async function nothingFetch(
     }>('plugin:http|fetch_send', { rid });
 
     let bodyDropped = false;
-    const dropBody = () => {
-      if (bodyDropped) return Promise.resolve();
+    const dropBody = async (): Promise<void> => {
+      if (bodyDropped) return;
       bodyDropped = true;
-      return invoke('plugin:http|fetch_cancel_body', { rid: responseRid }).catch(() => {});
+      try {
+        await invoke('plugin:http|fetch_cancel_body', { rid: responseRid });
+      } catch {}
     };
 
     const readChunk = async (controller: ReadableStreamDefaultController<Uint8Array>) => {
@@ -149,34 +180,27 @@ export async function nothingFetch(
       const lastByte = dataUint8[dataUint8.byteLength - 1];
       const actualData = dataUint8.slice(0, dataUint8.byteLength - 1);
 
-      if (lastByte === 1) {
-        if (actualData.byteLength > 0) {
-          controller.enqueue(actualData);
-        }
-        controller.close();
-        return;
+      if (actualData.byteLength > 0) {
+        controller.enqueue(actualData);
       }
-      controller.enqueue(actualData);
+      if (lastByte === 1) {
+        controller.close();
+        void dropBody();
+      } else {
+        await readChunk(controller);
+      }
     };
 
-    const bodyStream = [101, 103, 204, 205, 304].includes(status)
-      ? null
-      : new ReadableStream<Uint8Array>({
-          start(controller) {
-            signal?.addEventListener('abort', () => {
-              controller.error(new Error(ERROR_REQUEST_CANCELLED));
-              void dropBody();
-            });
-          },
-          pull(controller) {
-            return readChunk(controller);
-          },
-          cancel() {
-            void dropBody();
-          },
-        });
+    const stream = new ReadableStream({
+      async start(controller) {
+        await readChunk(controller);
+      },
+      async cancel() {
+        await dropBody();
+      },
+    });
 
-    const res = new Response(bodyStream, {
+    const res = new Response(stream, {
       status,
       statusText,
     });
@@ -186,6 +210,8 @@ export async function nothingFetch(
       value: new Headers(responseHeaders),
       writable: false,
     });
+    // Attach rawHeaders for reliable Set-Cookie extraction
+    (res as any).rawHeaders = responseHeaders;
 
     const originalClone = res.clone.bind(res);
     Object.defineProperty(res, 'clone', {
@@ -196,13 +222,14 @@ export async function nothingFetch(
           value: new Headers(responseHeaders),
           writable: false,
         });
+        (cloned as any).rawHeaders = responseHeaders;
         return cloned;
       },
     });
 
     return res;
+  } catch (ipcErr: any) {
+    console.warn('Tauri IPC fetch failed, falling back to browser fetch:', ipcErr);
+    return fetch(targetUrl, options);
   }
-
-  // Standard web browser fallback
-  return fetch(targetUrl, options);
 }
