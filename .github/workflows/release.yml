@@ -75,3 +75,107 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Prepare Linux Bundle and Standalone Tarball (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'v1.0.8' }}"
+          
+          # 1. Extract .deb into package-bundle for Flatpak
+          DEB_FILE=$(ls src-tauri/target/release/bundle/deb/*.deb | head -n 1)
+          mkdir -p temp-deb
+          cd temp-deb
+          ar x "../$DEB_FILE"
+          mkdir -p ../package-bundle
+          tar -xf data.tar.* -C ../package-bundle
+          cd ..
+          rm -rf temp-deb
+
+          # 2. Package standalone Linux tarball (native binary for Arch/Fedora/Debian)
+          mkdir -p standalone-pkg
+          cp src-tauri/target/release/essential-space-desktop standalone-pkg/
+          cp -r src-tauri/icons standalone-pkg/
+          cat << 'EOF' > standalone-pkg/install.sh
+          #!/bin/sh
+          set -e
+          mkdir -p ~/.local/bin ~/.local/share/applications ~/.local/share/icons/hicolor/128x128/apps
+          cp essential-space-desktop ~/.local/bin/
+          chmod +x ~/.local/bin/essential-space-desktop
+          cp icons/128x128.png ~/.local/share/icons/hicolor/128x128/apps/com.nothing.essentialspace.desktop.png || true
+          cat << 'DESK' > ~/.local/share/applications/com.nothing.essentialspace.desktop.desktop
+          [Desktop Entry]
+          Name=Essential Space
+          Exec=~/.local/bin/essential-space-desktop
+          Icon=com.nothing.essentialspace.desktop
+          Type=Application
+          Categories=Utility;Office;
+          DESK
+          echo "Essential Space installed to ~/.local/bin/essential-space-desktop"
+          EOF
+          chmod +x standalone-pkg/install.sh
+          tar -czf "Essential.Space_${TAG}_linux_x86_64.tar.gz" -C standalone-pkg .
+          gh release upload "$TAG" "Essential.Space_${TAG}_linux_x86_64.tar.gz" --clobber
+
+      - name: Upload Package Bundle Artifact (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-bundle
+          path: package-bundle
+
+  flatpak:
+    name: Build Flatpak Bundle
+    needs: release
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-46
+      options: --privileged
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Package Bundle Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package-bundle
+          path: package-bundle
+
+      - name: Build Flatpak Bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: Essential.Space.flatpak
+          manifest-path: com.nothing.essentialspace.desktop.yml
+          cache: false
+          arch: x86_64
+
+      - name: Upload Flatpak Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-bundle
+          path: Essential.Space.flatpak
+
+  publish-flatpak:
+    name: Attach Flatpak to Release
+    needs: flatpak
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Flatpak Bundle Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flatpak-bundle
+
+      - name: Upload Flatpak to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'v1.0.8' }}"
+          gh release upload "$TAG" Essential.Space.flatpak --clobber

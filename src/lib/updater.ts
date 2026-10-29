@@ -30,7 +30,7 @@ export interface UpdateInfo {
 }
 
 const GITHUB_REPO = 'R0STEFAN/Essential-Space-Desktop';
-export const CURRENT_APP_VERSION = '1.0.7';
+export const CURRENT_APP_VERSION = '1.0.8';
 
 /**
  * Compare two semver strings: returns true if remote > current.

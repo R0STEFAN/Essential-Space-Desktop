@@ -1,0 +1,30 @@
+app-id: com.nothing.essentialspace.desktop
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: essential-space-desktop
+
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --share=network
+  - --talk-name=org.freedesktop.Notifications
+  - --filesystem=xdg-download
+
+modules:
+  - name: essential-space
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/bin /app/share/applications /app/share/icons/hicolor/128x128/apps /app/share/icons/hicolor/32x32/apps /app/share/icons/hicolor/256x256/apps
+      - install -Dm755 usr/bin/essential-space-desktop /app/bin/essential-space-desktop
+      - cp -r usr/share/icons/* /app/share/icons/ 2>/dev/null || true
+      - cp usr/share/applications/*.desktop /app/share/applications/com.nothing.essentialspace.desktop.desktop
+      - sed -i 's/^Exec=.*/Exec=essential-space-desktop/' /app/share/applications/com.nothing.essentialspace.desktop.desktop
+      - sed -i 's/^Icon=.*/Icon=com.nothing.essentialspace.desktop/' /app/share/applications/com.nothing.essentialspace.desktop.desktop
+      - cp /app/share/icons/hicolor/128x128/apps/*.png /app/share/icons/hicolor/128x128/apps/com.nothing.essentialspace.desktop.png 2>/dev/null || true
+      - cp /app/share/icons/hicolor/32x32/apps/*.png /app/share/icons/hicolor/32x32/apps/com.nothing.essentialspace.desktop.png 2>/dev/null || true
+    sources:
+      - type: dir
+        path: package-bundle
